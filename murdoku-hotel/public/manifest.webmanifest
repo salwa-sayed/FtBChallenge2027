@@ -1,0 +1,11 @@
+{
+  "name": "Late Checkout",
+  "short_name": "Late Checkout",
+  "description": "A co-op hotel murder mystery you solve together on your phones.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f4eee1",
+  "theme_color": "#1f2a44",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
