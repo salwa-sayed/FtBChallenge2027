@@ -48,9 +48,25 @@
     pick: -1,
     dismissed: false,
     difficulty: 'medium',
+    lang: 'en',
   };
 
   const socket = io();
+
+  // ---------- i18n ----------
+  const LANGS = { en: 'English', fr: 'Français' };  
+  const lang0 = (navigator.language || 'en').split('-')[0];
+  ui.lang = storage.get('lc.lang') || (LANGS[lang0] ? lang0 : 'en');
+  const t  = (key, vars) => window.i18n.t(ui.lang, key, vars);
+  const tc = (n, vars)   => window.i18n.tCount(ui.lang, n, vars);
+
+  let ready = false;
+  function loadLocale(lang) {
+    return fetch(`/locales/${lang}`)
+      .then((r) => { if (!r.ok) throw new Error(lang); return r.json(); })
+      .then((d) => { window.i18n.load(lang, d); return d; })
+      .catch(() => (lang !== 'en' ? loadLocale('en') : Promise.reject(new Error('no locale'))));
+  }
 
   // ---------- networking ----------
   socket.on('connect', () => {
@@ -58,7 +74,7 @@
     const ses = session.get();
     if (ses) {
       ui.rejoining = !S;
-      socket.emit('rejoin', ses, (res) => {
+      socket.emit('rejoin', { ...ses, lang: ui.lang }, (res) => {
         ui.rejoining = false;
         if (res && res.ok) { meId = res.playerId; return; }
         session.clear();
@@ -71,7 +87,10 @@
       render();
     }
   });
-  socket.on('disconnect', () => { $('#conn').hidden = false; });
+  socket.on('disconnect', () => {
+    $('#conn').hidden = false;
+    $('#conn').textContent = t('ui.reconnecting');
+  });
   socket.on('state', (next) => {
     const prev = S;
     S = next;
@@ -142,9 +161,12 @@
 
   // ---------- views ----------
   function render() {
+    if (!ready) return;
     const app = $('#app');
     if (!S) {
-      app.innerHTML = ui.rejoining ? '<p class="foot" style="margin-top:40vh">Finding your table…</p>' : homeView();
+      app.innerHTML = ui.rejoining
+        ? `<p class="foot" style="margin-top:40vh">${t('ui.findingTable')}</p>`
+        : homeView();
       return;
     }
     app.innerHTML = S.phase === 'lobby' ? lobbyView() : gameView();
@@ -154,63 +176,69 @@
     return `
       <section class="hero">
         <div class="bell">🛎️</div>
-        <h1>Late Checkout</h1>
-        <p class="sub">A hotel murder mystery you solve together, each on your own phone.</p>
+        <h1>${t('ui.appName')}</h1>
+        <p class="sub">${t('ui.tagline')}</p>
       </section>
       <section class="card">
-        <label class="lbl" for="name">Your name</label>
-        <input id="name" class="input" maxlength="14" autocomplete="nickname" placeholder="e.g. Sam" value="${esc(ui.name)}">
-        <button class="btn primary block" data-act="create" style="margin-top:12px">Start a new case</button>
+        <label class="lbl" for="name">${t('ui.yourName')}</label>
+        <input id="name" class="input" maxlength="14" autocomplete="nickname" placeholder="${t('ui.namePlaceholder')}" value="${esc(ui.name)}">
+        <button class="btn primary block" data-act="create" style="margin-top:12px">${t('ui.startCase')}</button>
       </section>
       <section class="card">
-        <label class="lbl" for="code">Or join friends</label>
+        <label class="lbl" for="code">${t('ui.orJoin')}</label>
         <div class="row">
           <input id="code" class="input code-in" maxlength="4" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false" placeholder="CODE" value="${esc(ui.code)}">
-          <button class="btn brass" data-act="join">Join</button>
+          <button class="btn brass" data-act="join">${t('ui.join')}</button>
         </div>
       </section>
+      <section class="card">
+        <label class="lbl" for="lang">${t('ui.language')}</label>
+        <select id="lang" class="input">
+          ${Object.entries(LANGS).map(([k, v]) => `<option value="${k}" ${ui.lang === k ? 'selected' : ''}>${v}</option>`).join('')}
+        </select>
+      </section>
       ${ui.homeError ? `<p class="err">${esc(ui.homeError)}</p>` : ''}
-      <p class="foot">One shared floor plan. Every move shows up live on everyone's phone.</p>`;
+      <p class="foot">${t('ui.tagline')}</p>`;
   }
 
   function rulesHTML() {
     return `<ol class="rules">
-      <li>Six staff were each on a <b>different row and a different column</b> of the floor plan. Nobody stood on the 💀 spot.</li>
-      <li>Use the clues to place everyone. <b>North</b> is up, <b>west</b> is left. <b>Beside</b> means directly up, down, left or right.</li>
-      <li>The culprit is the <b>only staff member in the same room as the victim</b>.</li>
-      <li>When the board is full, accuse. Three wrong accusations and the culprit walks free.</li>
+      <li>${t('rules.1')}</li>
+      <li>${t('rules.2')}</li>
+      <li>${t('rules.3')}</li>
+      <li>${t('rules.4')}</li>
     </ol>`;
   }
 
   function playerPills() {
     return S.players.map((p) => `
-      <span class="pill${p.online ? '' : ' off'}">${p.avatar} ${esc(p.name)}${p.id === S.hostId ? ' <span class="tag">host</span>' : ''}${p.id === meId ? ' <span class="tag">you</span>' : ''}</span>`).join('');
+      <span class="pill${p.online ? '' : ' off'}">${p.avatar} ${esc(p.name)}${p.id === S.hostId ? ` <span class="tag">${t('ui.host')}</span>` : ''}${p.id === meId ? ` <span class="tag">${t('ui.you')}</span>` : ''}</span>`).join('');
   }
 
   function lobbyView() {
     const host = S.hostId === meId;
     const hostP = S.players.find((p) => p.id === S.hostId);
-    const diffs = [['easy', 'Easy'], ['medium', 'Medium'], ['hard', 'Hard']];
+    const diffs = [['easy', t('ui.easy')], ['medium', t('ui.medium')], ['hard', t('ui.hard')]];
     return `
-      <header class="top"><div><small>${esc(S.hotel)}</small><h1>Late Checkout</h1></div></header>
+      <header class="top"><div><small>${esc(S.hotel)}</small><h1>${t('ui.appName')}</h1></div></header>
       <section class="card center">
-        <span class="lbl">Room code</span>
+        <span class="lbl">${t('ui.roomCode')}</span>
         <div class="codebox" data-act="copyCode">${esc(S.code)}</div>
-        <button class="btn brass block" data-act="share">Invite friends</button>
+        <button class="btn brass block" data-act="share">${t('ui.invite')}</button>
       </section>
       <section class="card">
-        <span class="lbl">At the table · ${S.players.length}/8</span>
+        <span class="lbl">${t('ui.atTable', { n: S.players.length })}</span>
         <div class="plist">${playerPills()}</div>
       </section>
       <section class="card">
         ${host ? `
-          <span class="lbl">Difficulty</span>
+          <span class="lbl">${t('ui.difficulty')}</span>
           <div class="seg">${diffs.map(([id, label]) => `<button data-act="difficulty" data-d="${id}" class="${ui.difficulty === id ? 'on' : ''}">${label}</button>`).join('')}</div>
-          <button class="btn primary block" data-act="start" style="margin-top:14px">Open the case</button>`
-    : `<p style="margin:0">Waiting for <b>${esc(hostP ? hostP.name : 'the host')}</b> to open the case…</p>`}
+          <button class="btn primary block" data-act="start" style="margin-top:14px">${t('ui.openCase')}</button>`
+    : `<p style="margin:0">${t('ui.waitingHost', { name: hostP ? esc(hostP.name) : '…' })}</p>`}
       </section>
-      <section class="card"><span class="lbl">How it works</span>${rulesHTML()}</section>
-      <button class="btn ghost block" data-act="leave">Leave room</button>`;
+      <section class="card"><span class="lbl">${t('ui.howItWorks')}</span>${rulesHTML()}</section>
+      <button class="btn ghost block" data-act="leave">${t('ui.leaveRoom')}</button>`;
   }
 
   function hl(text) {
@@ -257,8 +285,8 @@
         const isVictim = i === P.victim.cell;
         const s = placedAt[i];
         let inner = '';
-        if (labelCell[rid] === i) inner += `<span class="rlabel">${esc(P.rooms[roomIdx[rid]].name)}</span>`;
-        if (itemAt[i]) inner += `<span class="item" title="${esc(itemAt[i].name)}">${itemAt[i].emoji}</span>`;
+        if (labelCell[rid] === i) inner += `<span class="rlabel">${esc(t('room.' + (P.layoutId || 'ground') + '.' + rid))}</span>`;
+        if (itemAt[i]) inner += `<span class="item" title="${esc(t('item.' + itemAt[i].id))}">${itemAt[i].emoji}</span>`;
         if (isVictim) inner += '<span class="skull" title="Victim">💀</span>';
         if (s !== undefined) {
           const bad = !fin && (rowCount[r] > 1 || colCount[c] > 1);
@@ -279,7 +307,7 @@
       }
     }
     return `${h}</div>
-      <div class="legend">${P.rooms.map((r, i) => `<span><i style="background:${ROOM_COLORS[i]}"></i>${esc(r.name)}</span>`).join('')}<span>💀 victim</span></div>`;
+      <div class="legend">${P.rooms.map((r, i) => `<span><i style="background:${ROOM_COLORS[i]}"></i>${esc(t('room.' + (P.layoutId || 'ground') + '.' + r.id))}</span>`).join('')}<span>💀 victim</span></div>`;
   }
 
   function trayHTML() {
@@ -289,22 +317,45 @@
       const placed = S.board.placed[s] >= 0;
       return `<button class="chip${ui.selected === s ? ' on' : ''}${placed ? ' done' : ''}" data-act="staff" data-s="${s}" style="--c:${STAFF_COLORS[s]}" ${dis ? 'disabled' : ''}>
         <span class="tk">${esc(st.name[0])}${placed ? '<em class="ck">✓</em>' : ''}</span>
-        <span class="nm"><b>${esc(st.name)}</b><small>${esc(st.role)}</small></span>
+        <span class="nm"><b>${esc(st.name)}</b><small>${esc(t('role.' + st.role))}</small></span>
       </button>`;
     }).join('')}</div>
     <div class="seg mode">
-      <button data-act="mode" data-m="place" class="${ui.mode === 'place' ? 'on' : ''}">Place suspect</button>
-      <button data-act="mode" data-m="note" class="${ui.mode === 'note' ? 'on' : ''}">✕ Rule out</button>
+      <button data-act="mode" data-m="place" class="${ui.mode === 'place' ? 'on' : ''}">${t('ui.placeSuspect')}</button>
+      <button data-act="mode" data-m="note" class="${ui.mode === 'note' ? 'on' : ''}">${t('ui.ruleOut')}</button>
     </div>
-    <p class="hint">${ui.selected < 0 ? 'Tap a staff member, then tap a square.' : (ui.mode === 'place' ? 'Tap a square to put them there. Tap them again to take them off.' : 'Tap squares where they cannot be.')}</p>`;
+    <p class="hint">${ui.selected < 0 ? t('ui.tapStaffThenSquare') : (ui.mode === 'place' ? t('ui.tapSquarePlace') : t('ui.tapSquareRuleOut'))}</p>`;
+  }
+
+  function renderClue(c) {
+    const nm = (i) => S.puzzle.staff[i].name;
+    const layoutId = S.puzzle.layoutId || 'ground';
+    const room = (id) => t(`room.${layoutId}.${id}`);
+    const item = (id) => t(`item.${id}`);
+    switch (c.t) {
+      case 'in_room':
+      case 'not_in_room': return t(`clue.${c.t}`, { a: nm(c.a), room: room(c.room) });
+      case 'on_item':
+      case 'next_item': return t(`clue.${c.t}`, { a: nm(c.a), item: item(c.item) });
+      case 'in_col': return t('clue.in_col', { a: nm(c.a), col: COLS[c.col] });
+      case 'in_row': return t('clue.in_row', { a: nm(c.a), row: c.row + 1 });
+      case 'alone': return t('clue.alone', { a: nm(c.a) });
+      case 'together':
+      case 'apart':
+      case 'north':
+      case 'west':
+      case 'diag': return t(`clue.${c.t}`, { a: nm(c.a), b: nm(c.b) });
+      case 'count': return tc(c.n, { room: room(c.room) });
+      default: return c.text || '';
+    }
   }
 
   function cluesHTML() {
     const P = S.puzzle;
     return `<section class="card">
-      <button class="help-toggle" data-act="toggleClues"><span>Clues (${P.clues.length})</span><span>${ui.cluesOpen ? '▾' : '▸'}</span></button>
-      ${ui.cluesOpen ? `<p class="hint" style="margin:6px 0 4px">Tap a clue to cross it off for everyone.</p>${P.clues.map((c, i) => `
-        <button class="clue${S.board.struck[i] ? ' struck' : ''}" data-act="clue" data-i="${i}"><span class="n">${i + 1}</span><span class="tx">${hl(c.text)}</span></button>`).join('')}` : ''}
+      <button class="help-toggle" data-act="toggleClues"><span>${t('ui.clues', { n: P.clues.length })}</span><span>${ui.cluesOpen ? '▾' : '▸'}</span></button>
+      ${ui.cluesOpen ? `<p class="hint" style="margin:6px 0 4px">${t('ui.tapClue')}</p>${P.clues.map((c, i) => `
+        <button class="clue${S.board.struck[i] ? ' struck' : ''}" data-act="clue" data-i="${i}"><span class="n">${i + 1}</span><span class="tx">${hl(renderClue(c))}</span></button>`).join('')}` : ''}
     </section>`;
   }
 
@@ -324,17 +375,18 @@
 
   function accuseSheet() {
     const P = S.puzzle;
+    const layoutId = P.layoutId || 'ground';
     return `<div class="scrim" data-act="closeAccuse"></div>
-      <div class="sheet" role="dialog" aria-label="Make an accusation">
-        <h3>Who did it?</h3>
-        <p class="muted">${esc(P.victim.name)} was found in the ${esc(P.rooms.find((r) => r.id === P.victim.room).name)}. Pick the staff member who was alone with them.</p>
+      <div class="sheet" role="dialog" aria-label="${t('ui.whoDidIt')}">
+        <h3>${t('ui.whoDidIt')}</h3>
+        <p class="muted">${t('ui.whoDidItBody', { victim: esc(P.victim.name), room: esc(t('room.' + layoutId + '.' + P.victim.room)) })}</p>
         <div class="picks">${P.staff.map((st, s) => `
           <button class="chip${ui.pick === s ? ' on' : ''}" data-act="pick" data-s="${s}" style="--c:${STAFF_COLORS[s]}">
-            <span class="tk">${esc(st.name[0])}</span><span class="nm"><b>${esc(st.name)}</b><small>${esc(st.role)}</small></span>
+            <span class="tk">${esc(st.name[0])}</span><span class="nm"><b>${esc(st.name)}</b><small>${esc(t('role.' + st.role))}</small></span>
           </button>`).join('')}</div>
         <div class="stack">
-          <button class="btn danger block" data-act="confirmAccuse" ${ui.pick < 0 ? 'disabled' : ''}>Accuse${ui.pick >= 0 ? ' ' + esc(P.staff[ui.pick].name) : ''}</button>
-          <button class="btn ghost block" data-act="closeAccuse">Keep investigating</button>
+          <button class="btn danger block" data-act="confirmAccuse" ${ui.pick < 0 ? 'disabled' : ''}>${t('ui.accuse')}${ui.pick >= 0 ? ' ' + esc(P.staff[ui.pick].name) : ''}</button>
+          <button class="btn ghost block" data-act="closeAccuse">${t('ui.keepInvestigating')}</button>
         </div>
       </div>`;
   }
@@ -343,19 +395,19 @@
     const P = S.puzzle;
     const won = S.phase === 'won';
     const culprit = P.staff[S.result.culprit];
-    const roomName = P.rooms.find((r) => r.id === P.victim.room).name;
+    const roomName = t('room.' + (P.layoutId || 'ground') + '.' + P.victim.room);
     const host = S.hostId === meId;
     const time = fmtTime((S.endedAt || 0) - S.startedAt);
     return `<div class="scrim" data-act="dismissResult"></div>
-      <div class="sheet" role="dialog" aria-label="Case result">
+      <div class="sheet" role="dialog" aria-label="${won ? t('ui.caseClosed') : t('ui.culpritEscaped')}">
         <div class="big">${won ? '🎉' : '🏃'}</div>
-        <h3>${won ? 'Case closed!' : 'The culprit got away'}</h3>
-        <p><b>${esc(culprit.name)}</b> (${esc(culprit.role)}) was alone with ${esc(P.victim.name)} in the ${esc(roomName)}.</p>
-        <p class="muted">${won ? `Solved in ${time} with ${S.players.length} detective${S.players.length === 1 ? '' : 's'}, ${S.strikes} wrong accusation${S.strikes === 1 ? '' : 's'}.` : `Three wrong accusations after ${time}. The solved plan is on the board.`}</p>
+        <h3>${won ? t('ui.caseClosed') : t('ui.culpritEscaped')}</h3>
+        <p>${t('ui.culpritWas', { name: esc(culprit.name), role: esc(t('role.' + culprit.role)), victim: esc(P.victim.name), room: esc(roomName) })}</p>
+        <p class="muted">${won ? t('ui.solvedIn', { time, players: S.players.length, strikes: S.strikes }) : t('ui.threeWrong', { time })}</p>
         <div class="stack">
-          ${host ? `<button class="btn primary block" data-act="again">Open another case</button>
-          <button class="btn ghost block" data-act="toLobby">Back to lobby</button>` : '<p class="muted" style="text-align:center;margin:0">Waiting for the host to open another case…</p>'}
-          <button class="btn ghost block" data-act="dismissResult">Look at the board</button>
+          ${host ? `<button class="btn primary block" data-act="again">${t('ui.openAnother')}</button>
+          <button class="btn ghost block" data-act="toLobby">${t('ui.backToLobby')}</button>` : `<p class="muted" style="text-align:center;margin:0">${t('ui.waitingHostAgain')}</p>`}
+          <button class="btn ghost block" data-act="dismissResult">${t('ui.lookAtBoard')}</button>
         </div>
       </div>`;
   }
@@ -368,27 +420,31 @@
     const canAccuse = allPlaced && !hasConflict();
     const hearts = Array.from({ length: S.maxStrikes }, (_, i) => (i < S.strikes ? '🖤' : '❤️')).join('');
     const elapsed = (fin ? S.endedAt : Date.now() + skew) - S.startedAt;
-    const roomName = P.rooms.find((r) => r.id === P.victim.room).name;
+    const layoutId = P.layoutId || 'ground';
+    const roomName = t('room.' + layoutId + '.' + P.victim.room);
+    const title = (P.title && typeof P.title === 'object')
+      ? t('title.foundDead', { name: P.title.victimName, room: t('room.' + layoutId + '.' + P.title.victimRoom) })
+      : P.title;
 
     return `
       <header class="top">
-        <div><small>${esc(P.hotel)} · ${esc(P.floor)}</small><h1>${esc(P.title)}</h1></div>
+        <div><small>${esc(P.hotel)} · ${esc(t('floor.' + layoutId) || P.floor)}</small><h1>${esc(title)}</h1></div>
         <div class="timer" id="timer">${fmtTime(elapsed)}</div>
       </header>
       <div class="crew">${S.players.map((p) => `<span class="pl${p.online ? '' : ' off'}${p.id === meId ? ' me' : ''}">${p.avatar} ${esc(p.name)}</span>`).join('')}</div>
-      ${fin ? `<div class="result-banner ${S.phase}"><span>${S.phase === 'won' ? 'Solved!' : 'Unsolved.'} The culprit was ${esc(P.staff[S.result.culprit].name)}.</span><button class="btn ghost" data-act="reopenResult" style="min-height:36px;padding:6px 12px;font-size:13px">Details</button></div>` : ''}
+      ${fin ? `<div class="result-banner ${S.phase}"><span>${S.phase === 'won' ? t('ui.solved') : t('ui.unsolved')} ${t('ui.culpritWasShort', { name: esc(P.staff[S.result.culprit].name) })}</span><button class="btn ghost" data-act="reopenResult" style="min-height:36px;padding:6px 12px;font-size:13px">${t('ui.details')}</button></div>` : ''}
       <section class="card">
-        <button class="help-toggle" data-act="toggleHelp"><span>How to play</span><span>${ui.helpOpen ? '▾' : '▸'}</span></button>
-        ${ui.helpOpen ? `<div style="margin-top:10px">${rulesHTML()}</div>` : `<p class="hint" style="margin:6px 0 0">The culprit is the only staff member in the ${esc(roomName)} with ${esc(P.victim.name)}.</p>`}
+        <button class="help-toggle" data-act="toggleHelp"><span>${t('ui.howItWorks')}</span><span>${ui.helpOpen ? '▾' : '▸'}</span></button>
+        ${ui.helpOpen ? `<div style="margin-top:10px">${rulesHTML()}</div>` : `<p class="hint" style="margin:6px 0 0">${t('ui.helpHint', { room: esc(roomName), victim: esc(P.victim.name) })}</p>`}
       </section>
       ${boardHTML()}
       ${fin ? '' : trayHTML()}
       ${cluesHTML()}
       <div class="bar"><div class="in">
         ${fin
-    ? (host ? '<button class="btn primary" data-act="again">Open another case</button>' : '<span class="muted" style="font-size:14px">Waiting for the host to open another case…</span>')
-    : `<div class="strikes">Wrong accusations<b>${hearts}</b></div>
-           <button class="btn danger" data-act="openAccuse" ${canAccuse ? '' : 'disabled'}>${allPlaced ? (canAccuse ? 'Accuse someone' : 'Fix the red tokens') : 'Place all six first'}</button>`}
+    ? (host ? `<button class="btn primary" data-act="again">${t('ui.openAnother')}</button>` : `<span class="muted" style="font-size:14px">${t('ui.waitingHostAgain')}</span>`)
+    : `<div class="strikes">${t('ui.wrongAccusations')}<b>${hearts}</b></div>
+           <button class="btn danger" data-act="openAccuse" ${canAccuse ? '' : 'disabled'}>${allPlaced ? (canAccuse ? t('ui.accuseSomeone') : t('ui.fixRedTokens')) : t('ui.placeAllSix')}</button>`}
       </div></div>
       ${!fin && ui.accuse ? accuseSheet() : ''}
       ${fin && !ui.dismissed ? resultSheet() : ''}`;
@@ -397,22 +453,22 @@
   // ---------- actions ----------
   const handlers = {
     create() {
-      if (!ui.name.trim()) { ui.homeError = 'Type your name first.'; render(); return; }
+      if (!ui.name.trim()) { ui.homeError = t('ui.typeNameFirst'); render(); return; }
       storage.set('lc.name', ui.name.trim());
-      socket.emit('create', { name: ui.name.trim() }, joined);
+      socket.emit('create', { name: ui.name.trim(), lang: ui.lang }, joined);
     },
     join() {
-      if (!ui.name.trim()) { ui.homeError = 'Type your name first.'; render(); return; }
-      if (ui.code.length !== 4) { ui.homeError = 'Room codes are 4 letters.'; render(); return; }
+      if (!ui.name.trim()) { ui.homeError = t('ui.typeNameFirst'); render(); return; }
+      if (ui.code.length !== 4) { ui.homeError = t('ui.roomCodes4'); render(); return; }
       storage.set('lc.name', ui.name.trim());
-      socket.emit('join', { name: ui.name.trim(), code: ui.code }, joined);
+      socket.emit('join', { name: ui.name.trim(), code: ui.code, lang: ui.lang }, joined);
     },
     leave() {
       socket.emit('leave', {}, () => {
         session.clear();
         S = null;
         meId = null;
-        lastLogRoom = null;
+        lastLogRoom = null;hote
         ui.code = '';
         history.replaceState(null, '', location.pathname);
         render();
@@ -420,13 +476,13 @@
     },
     async share() {
       const url = `${location.origin}${location.pathname}?room=${S.code}`;
-      const text = `Help me solve a hotel murder! Room code ${S.code}`;
+      const text = `${t('ui.invite')} — ${S.code}`;
       if (navigator.share) {
-        try { await navigator.share({ title: 'Late Checkout', text, url }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+        try { await navigator.share({ title: t('ui.appName'), text, url }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
       }
-      copy(url, 'Invite link copied');
+      copy(url, t('ui.inviteCopied'));
     },
-    copyCode() { copy(S.code, 'Room code copied'); },
+    copyCode() { copy(S.code, t('ui.roomCodeCopied')); },
     difficulty(el) { ui.difficulty = el.dataset.d; render(); },
     start() { socket.emit('start', { difficulty: ui.difficulty }, resync); },
     again() { socket.emit('start', { difficulty: S.difficulty }, resync); },
@@ -440,10 +496,10 @@
     cell(el) {
       if (!S || S.phase !== 'playing') return;
       const i = Number(el.dataset.i);
-      if (i === S.puzzle.victim.cell) { toast('Nobody on staff can stand on the victim’s spot.'); return; }
+      if (i === S.puzzle.victim.cell) { toast(t('ui.nobodyOnVictim')); return; }
       if (ui.selected < 0) {
         const there = S.board.placed.indexOf(i);
-        if (there >= 0) { ui.selected = there; render(); } else toast('Pick a staff member below first.');
+        if (there >= 0) { ui.selected = there; render(); } else toast(t('ui.pickStaffFirst'));
         return;
       }
       if (navigator.vibrate) navigator.vibrate(8);
@@ -467,6 +523,12 @@
     openAccuse() { ui.accuse = true; ui.pick = -1; render(); },
     closeAccuse() { ui.accuse = false; render(); },
     pick(el) { ui.pick = Number(el.dataset.s); render(); },
+    setLang(el) {
+      ui.lang = el.value;
+      storage.set('lc.lang', ui.lang);
+      document.documentElement.lang = ui.lang;
+      loadLocale(ui.lang).then(() => render());
+    },
     confirmAccuse() {
       if (ui.pick < 0) return;
       const staff = ui.pick;
@@ -483,7 +545,7 @@
   };
 
   function joined(res) {
-    if (!res || !res.ok) { ui.homeError = (res && res.error) || 'Could not join.'; render(); return; }
+    if (!res || !res.ok) { ui.homeError = (res && res.error) || t('ui.couldNotJoin'); render(); return; }
     meId = res.playerId;
     ui.homeError = '';
     session.set({ code: res.code, playerId: res.playerId });
@@ -491,7 +553,7 @@
   }
 
   async function copy(text, okMsg) {
-    try { await navigator.clipboard.writeText(text); toast(okMsg); } catch (e) { window.prompt('Copy this:', text); }
+    try { await navigator.clipboard.writeText(text); toast(okMsg); } catch (e) { window.prompt(t('ui.copyThis'), text); }
   }
 
   document.addEventListener('click', (e) => {
@@ -507,6 +569,9 @@
       ui.code = e.target.value.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4);
       e.target.value = ui.code;
     }
+  });
+  document.addEventListener('change', (e) => {
+    if (e.target.id === 'lang') handlers.setLang(e.target);
   });
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
@@ -525,5 +590,12 @@
     if (!document.hidden && S && socket.connected) socket.emit('sync');
   });
 
-  render();
+  // Load the saved language before the first render.
+  loadLocale(ui.lang)
+    .catch(() => loadLocale('en'))
+    .finally(() => {
+      document.documentElement.lang = ui.lang;
+      ready = true;
+      render();
+    });
 })();

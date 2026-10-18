@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { publicPuzzle } = require('./puzzle');
+const i18n = require('./i18n');
 
 const HOTEL_NAME = process.env.HOTEL_NAME || 'The Grand Hotel';
 const MAX_PLAYERS = 8;
@@ -29,7 +30,8 @@ function puzzleBank() {
 
 const rooms = new Map();
 
-const err = (message) => ({ error: message });
+// Every error goes through the caller's language, falling back to English.
+const err = (lang, key, vars) => ({ error: i18n.t(lang || 'en', key, vars) });
 const isInt = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
 
 function cleanName(raw) {
@@ -58,10 +60,17 @@ function log(room, kind, text) {
   if (room.log.length > 30) room.log.shift();
 }
 
-function addPlayer(room, rawName) {
+// Log lines are rendered once, in the language of whoever triggered them.
+// That's the right trade-off: a French player's join message stays French
+// for everyone, which is what real chat looks like.
+function logKey(room, kind, lang, key, vars) {
+  log(room, kind, i18n.t(lang || 'en', key, vars));
+}
+
+function addPlayer(room, rawName, lang) {
   const usedAvatars = new Set([...room.players.values()].map((p) => p.avatar));
   const avatar = AVATARS.find((a) => !usedAvatars.has(a)) || AVATARS[0];
-  const base = cleanName(rawName) || 'Guest';
+  const base = cleanName(rawName) || i18n.t(lang || 'en', 'ui.guest');
   const taken = new Set([...room.players.values()].map((p) => p.name.toLowerCase()));
   let name = base;
   let n = 2;
@@ -70,6 +79,7 @@ function addPlayer(room, rawName) {
     id: crypto.randomBytes(9).toString('hex'),
     name,
     avatar,
+    lang: lang || 'en',
     socketId: null,
     lastSeen: Date.now(),
   };
@@ -79,10 +89,10 @@ function addPlayer(room, rawName) {
 
 // ---------- room lifecycle ----------
 
-function createRoom(name) {
-  if (rooms.size >= MAX_ROOMS) return err('The hotel is full right now. Try again in a few minutes.');
+function createRoom(name, lang) {
+  if (rooms.size >= MAX_ROOMS) return err(lang, 'error.hotelFull');
   const code = newCode();
-  if (!code) return err('Could not create a room. Try again.');
+  if (!code) return err(lang, 'error.couldNotCreate');
   const room = {
     code,
     hostId: null,
@@ -101,7 +111,7 @@ function createRoom(name) {
     logSeq: 0,
     lastActive: Date.now(),
   };
-  const player = addPlayer(room, name);
+  const player = addPlayer(room, name, lang);
   room.hostId = player.id;
   rooms.set(code, room);
   return { room, player };
@@ -111,21 +121,22 @@ function getRoom(code) {
   return rooms.get(String(code || '').toUpperCase().trim());
 }
 
-function joinRoom(code, name) {
+function joinRoom(code, name, lang) {
   const room = getRoom(code);
-  if (!room) return err('No room with that code. Check it and try again.');
-  if (room.players.size >= MAX_PLAYERS) return err('That room is full (8 players max).');
-  const player = addPlayer(room, name);
+  if (!room) return err(lang, 'error.noSuchRoom');
+  if (room.players.size >= MAX_PLAYERS) return err(lang, 'error.roomFull');
+  const player = addPlayer(room, name, lang);
   room.lastActive = Date.now();
-  log(room, 'join', `${player.avatar} ${player.name} joined`);
+  logKey(room, 'join', lang, 'log.joined', { avatar: player.avatar, name: player.name });
   return { room, player };
 }
 
-function rejoin(code, playerId) {
+function rejoin(code, playerId, lang) {
   const room = getRoom(code);
-  if (!room) return err('That room has closed.');
+  if (!room) return err(lang, 'error.roomClosed');
   const player = room.players.get(String(playerId || ''));
-  if (!player) return err('You are no longer in that room.');
+  if (!player) return err(lang, 'error.notInRoomAnymore');
+  if (lang) player.lang = lang;   // they may have switched language since
   return { room, player };
 }
 
@@ -151,7 +162,7 @@ function reassignHostIfNeeded(room) {
   const next = [...room.players.values()].find((p) => p.socketId);
   if (!next) return false;
   room.hostId = next.id;
-  log(room, 'host', `${next.avatar} ${next.name} is now the host`);
+  logKey(room, 'host', next.lang, 'log.newHost', { avatar: next.avatar, name: next.name });
   return true;
 }
 
@@ -160,22 +171,24 @@ function leaveRoom(room, playerId) {
   if (!p) return;
   room.players.delete(playerId);
   if (!room.players.size) { rooms.delete(room.code); return; }
-  log(room, 'leave', `${p.avatar} ${p.name} left`);
+  logKey(room, 'leave', p.lang, 'log.left', { avatar: p.avatar, name: p.name });
   if (room.hostId === playerId) {
     const next = [...room.players.values()].find((x) => x.socketId) || [...room.players.values()][0];
     room.hostId = next.id;
-    log(room, 'host', `${next.avatar} ${next.name} is now the host`);
+    logKey(room, 'host', next.lang, 'log.newHost', { avatar: next.avatar, name: next.name });
   }
 }
 
 // ---------- game flow ----------
 
 function startGame(room, playerId, difficulty) {
-  if (room.hostId !== playerId) return err('Only the host can open a new case.');
-  if (room.phase === 'playing') return err('A case is already in progress.');
+  const actor = room.players.get(playerId);
+  const lang = actor ? actor.lang : 'en';
+  if (room.hostId !== playerId) return err(lang, 'error.hostOnly');
+  if (room.phase === 'playing') return err(lang, 'error.alreadyPlaying');
   if (DIFFICULTIES.includes(difficulty)) room.difficulty = difficulty;
   const candidates = puzzleBank().filter((p) => p.difficulty === room.difficulty);
-  if (!candidates.length) return err('No puzzles are available for that difficulty.');
+  if (!candidates.length) return err(lang, 'error.noPuzzles');
   let fresh = candidates.filter((p) => !room.used.has(p.id));
   if (!fresh.length) { room.used.clear(); fresh = candidates; }
   const p = fresh[crypto.randomInt(fresh.length)];
@@ -190,13 +203,22 @@ function startGame(room, playerId, difficulty) {
   room.startedAt = Date.now();
   room.endedAt = null;
   room.lastActive = Date.now();
-  log(room, 'start', `New case: ${p.title}`);
+  // The title is structured now, so render it in the actor's language.
+  const title = (p.title && typeof p.title === 'object')
+    ? i18n.t(lang, 'title.foundDead', {
+        name: p.title.victimName,
+        room: i18n.t(lang, `room.${p.layoutId}.${p.title.victimRoom}`),
+      })
+    : p.title;
+  logKey(room, 'start', lang, 'log.newCase', { title });
   return { ok: true };
 }
 
 function backToLobby(room, playerId) {
-  if (room.hostId !== playerId) return err('Only the host can do that.');
-  if (room.phase === 'playing') return err('Finish the current case first.');
+  const actor = room.players.get(playerId);
+  const lang = actor ? actor.lang : 'en';
+  if (room.hostId !== playerId) return err(lang, 'error.hostOnly');
+  if (room.phase === 'playing') return err(lang, 'error.finishFirst');
   room.phase = 'lobby';
   room.puzzle = null;
   room.pub = null;
@@ -214,9 +236,11 @@ function removeNote(board, cell, staff) {
 }
 
 function place(room, playerId, staff, cell) {
-  if (room.phase !== 'playing') return err('No case is in progress.');
-  if (!isInt(staff, 0, N - 1) || !isInt(cell, 0, CELLS - 1)) return err('That move makes no sense.');
-  if (cell === room.puzzle.victim.cell) return err('Nobody on staff can stand there.');
+  const actor = room.players.get(playerId);
+  const lang = actor ? actor.lang : 'en';
+  if (room.phase !== 'playing') return err(lang, 'error.noCase');
+  if (!isInt(staff, 0, N - 1) || !isInt(cell, 0, CELLS - 1)) return err(lang, 'error.badMove');
+  if (cell === room.puzzle.victim.cell) return err(lang, 'error.victimCell');
   const b = room.board;
   if (b.placed[staff] === cell) {
     b.placed[staff] = -1;
@@ -234,9 +258,11 @@ function place(room, playerId, staff, cell) {
 }
 
 function note(room, playerId, staff, cell) {
-  if (room.phase !== 'playing') return err('No case is in progress.');
-  if (!isInt(staff, 0, N - 1) || !isInt(cell, 0, CELLS - 1)) return err('That move makes no sense.');
-  if (cell === room.puzzle.victim.cell) return err('Nobody on staff can stand there.');
+  const actor = room.players.get(playerId);
+  const lang = actor ? actor.lang : 'en';
+  if (room.phase !== 'playing') return err(lang, 'error.noCase');
+  if (!isInt(staff, 0, N - 1) || !isInt(cell, 0, CELLS - 1)) return err(lang, 'error.badMove');
+  if (cell === room.puzzle.victim.cell) return err(lang, 'error.victimCell');
   const b = room.board;
   if (b.placed[staff] === cell) return { ok: true };
   const list = b.notes[cell] ? b.notes[cell].slice() : [];
@@ -249,8 +275,10 @@ function note(room, playerId, staff, cell) {
 }
 
 function toggleClue(room, playerId, index) {
-  if (room.phase !== 'playing') return err('No case is in progress.');
-  if (!isInt(index, 0, room.puzzle.clues.length - 1)) return err('No such clue.');
+  const actor = room.players.get(playerId);
+  const lang = actor ? actor.lang : 'en';
+  if (room.phase !== 'playing') return err(lang, 'error.noCase');
+  if (!isInt(index, 0, room.puzzle.clues.length - 1)) return err(lang, 'error.noSuchClue');
   room.board.struck[index] = !room.board.struck[index];
   room.lastActive = Date.now();
   return { ok: true };
@@ -269,12 +297,13 @@ function finish(room, phase) {
 // A win needs BOTH the right board and the right suspect, so guessing among
 // six names is not enough. Wrong answers cost a strike and never say which part was wrong.
 function accuse(room, playerId, staff) {
-  if (room.phase !== 'playing') return err('No case is in progress.');
-  if (!isInt(staff, 0, N - 1)) return err('Pick one of the staff.');
+  const actor = room.players.get(playerId);
+  const lang = actor ? actor.lang : 'en';
+  if (room.phase !== 'playing') return err(lang, 'error.noCase');
+  if (!isInt(staff, 0, N - 1)) return err(lang, 'error.pickStaff');
   const b = room.board;
-  if (b.placed.some((c) => c < 0)) return err('Place all six staff on the plan before accusing anyone.');
-  const player = room.players.get(playerId);
-  const who = player ? `${player.avatar} ${player.name}` : 'Someone';
+  if (b.placed.some((c) => c < 0)) return err(lang, 'error.placeAllFirst');
+  const who = actor ? `${actor.avatar} ${actor.name}` : i18n.t(lang, 'ui.someone');
   const accused = room.puzzle.staff[staff].name;
   const boardRight = b.placed.every((c, i) => c === room.puzzle.solution[i]);
   const suspectRight = staff === room.puzzle.culprit;
@@ -282,19 +311,20 @@ function accuse(room, playerId, staff) {
 
   if (boardRight && suspectRight) {
     finish(room, 'won');
-    log(room, 'win', `${who} accused ${accused}. Case closed!`);
+    logKey(room, 'win', lang, 'log.win', { who, accused });
     return { ok: true, outcome: 'won' };
   }
   room.strikes += 1;
-  let why;
-  if (boardRight) why = 'Wrong suspect. Who is alone with the victim?';
-  else why = 'The board does not add up. Recheck the clues.';
+  const why = boardRight ? 'log.wrongSuspect' : 'log.wrongBoard';
   if (room.strikes >= MAX_STRIKES) {
     finish(room, 'lost');
-    log(room, 'lose', `${who} accused ${accused}. That was strike ${room.strikes}. The culprit got away.`);
+    logKey(room, 'lose', lang, 'log.lose', { who, accused, strikes: room.strikes });
     return { ok: true, outcome: 'lost' };
   }
-  log(room, 'accuse', `${who} accused ${accused}. Not quite (strike ${room.strikes}/${MAX_STRIKES}). ${why}`);
+  logKey(room, 'accuse', lang, 'log.strike', {
+    who, accused, strikes: room.strikes, max: MAX_STRIKES,
+    why: i18n.t(lang, why),
+  });
   return { ok: true, outcome: 'strike' };
 }
 
@@ -311,7 +341,7 @@ function stateFor(room) {
     strikes: room.strikes,
     serverTime: Date.now(),
     players: [...room.players.values()].map((p) => ({
-      id: p.id, name: p.name, avatar: p.avatar, online: !!p.socketId,
+      id: p.id, name: p.name, avatar: p.avatar, online: !!p.socketId, lang: p.lang,
     })),
     log: room.log.slice(-12),
   };

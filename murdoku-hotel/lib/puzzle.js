@@ -347,15 +347,13 @@ function generate(layout, difficulty, rng = Math.random) {
     for (let i = 0; i < EXTRAS[difficulty] && extraPool.length; i++) chosen.push(takeWeighted(extraPool, rng));
 
     chosen.sort((x, y) => (CATEGORY[x.t] - CATEGORY[y.t]) || ((x.a ?? 99) - (y.a ?? 99)));
-    const clues = chosen.map((c, i) => ({ ...c, id: i, text: clueText(c, staff, layout) }));
-
+    const clues = chosen.map((c, i) => ({ ...c, id: i }));
     const victimName = VICTIMS[Math.floor(rng() * VICTIMS.length)];
-    const roomName = layout.rooms.find((r) => r.id === victimRoom).name;
     return {
       layoutId: layout.id,
       floor: layout.floor,
       difficulty,
-      title: `${victimName} found dead in the ${roomName}`,
+      title: { victimName, victimRoom },
       staff,
       victim: { name: victimName, cell: victimCell, room: victimRoom },
       clues,
@@ -373,6 +371,7 @@ function publicPuzzle(p, hotel) {
     id: p.id,
     hotel,
     floor: p.floor,
+    layoutId: p.layoutId,
     title: p.title,
     difficulty: p.difficulty,
     rooms: layout.rooms,
@@ -380,7 +379,7 @@ function publicPuzzle(p, hotel) {
     items: layout.items,
     staff: p.staff,
     victim: { name: p.victim.name, cell: p.victim.cell, room: p.victim.room },
-    clues: p.clues.map((c) => ({ id: c.id, text: c.text })),
+    clues: p.clues.map((c) => ({ ...c })),
   };
 }
 

@@ -5,11 +5,25 @@ const http = require('http');
 const express = require('express');
 const { Server } = require('socket.io');
 const game = require('./lib/game');
+const fs = require('fs');
+const i18n = require('./lib/i18n');
 
 function createServer() {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.static(path.join(__dirname, 'public')));
+    // Serve locale JSON from the single locales/ folder.
+  app.get('/locales/:lang', (req, res) => {
+    const lang = String(req.params.lang || '').replace(/[^a-z-]/gi, '');
+    const file = path.join(__dirname, 'locales', `${lang}.json`);
+    if (!fs.existsSync(file)) return res.status(404).json({ error: 'unknown language' });
+    res.type('application/json').sendFile(file);
+  });
+
+  // Serve the shared i18n helper to the browser.
+  app.get('/i18n.js', (req, res) => {
+    res.type('application/javascript').sendFile(path.join(__dirname, 'lib', 'i18n.js'));
+  });
   app.get('/healthz', (req, res) => res.json({ ok: true, rooms: game.roomCount() }));
 
   const server = http.createServer(app);
@@ -34,19 +48,22 @@ function createServer() {
       socket.on(event, (data, cb) => {
         if (typeof data === 'function') { cb = data; data = {}; }
         const reply = typeof cb === 'function' ? cb : () => {};
-        if (!allow()) return reply({ ok: false, error: 'Slow down a little.' });
-        try {
+        if (!allow()) {
+          const lang = (socket.data && socket.data.lang) || 'en';
+          return reply({ ok: false, error: i18n.t(lang, 'error.slowDown') });
+        }  try {
           handler(data && typeof data === 'object' ? data : {}, reply);
         } catch (e) {
           console.error(`handler ${event} failed:`, e);
-          reply({ ok: false, error: 'Something went wrong on the server.' });
+          const lang = (socket.data && socket.data.lang) || 'en';
+          reply({ ok: false, error: i18n.t(lang, 'error.serverError') });        
         }
       });
     };
 
     const attach = (room, player) => {
       socket.join(room.code);
-      socket.data = { code: room.code, playerId: player.id };
+      socket.data = { code: room.code, playerId: player.id, lang: player.lang || 'en' };
       game.markOnline(room, player.id, socket.id);
     };
 
@@ -68,7 +85,7 @@ function createServer() {
     };
 
     on('create', (data, reply) => {
-      const res = game.createRoom(data.name);
+      const res = game.createRoom(data.name, data.lang);
       if (res.error) return reply({ ok: false, error: res.error });
       attach(res.room, res.player);
       reply({ ok: true, code: res.room.code, playerId: res.player.id });
@@ -76,7 +93,7 @@ function createServer() {
     });
 
     on('join', (data, reply) => {
-      const res = game.joinRoom(data.code, data.name);
+      const res = game.joinRoom(data.code, data.name, data.lang);
       if (res.error) return reply({ ok: false, error: res.error });
       attach(res.room, res.player);
       reply({ ok: true, code: res.room.code, playerId: res.player.id });
@@ -84,7 +101,7 @@ function createServer() {
     });
 
     on('rejoin', (data, reply) => {
-      const res = game.rejoin(data.code, data.playerId);
+      const res = game.rejoin(data.code, data.playerId, data.lang);
       if (res.error) return reply({ ok: false, error: res.error });
       attach(res.room, res.player);
       reply({ ok: true, code: res.room.code, playerId: res.player.id });
@@ -133,6 +150,13 @@ function createServer() {
   const sweeper = setInterval(() => game.sweep(), 60000);
   sweeper.unref();
   return { app, server, io };
+}
+
+// Load every locale file at startup.
+for (const f of fs.readdirSync(path.join(__dirname, 'locales'))) {
+  if (f.endsWith('.json')) {
+    i18n.load(f.replace(/\.json$/, ''), require(`./locales/${f}`));
+  }
 }
 
 if (require.main === module) {
